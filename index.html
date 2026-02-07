@@ -2,14 +2,19 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
-  <title>Grid 2x2 Exacto (intervalo variable)</title>
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Grid 2x2 + YouTube playlist (start on click)</title>
+
   <style>
-    html, body { margin:0; height:100%; }
+    html, body { margin:0; height:100%; overflow:hidden; font-family: system-ui, Arial, sans-serif; }
     .grid{
       display:grid;
       grid-template-columns:1fr 1fr;
       grid-template-rows:1fr 1fr;
       height:100vh; width:100vw;
+      position:relative;
+      z-index:1;
     }
     .cell{ background:#111; transition: background-color 0.12s linear; }
 
@@ -18,6 +23,7 @@
     .green{background:#43a047;}
     .yellow{background:#fdd835;}
 
+    /* Countdown */
     .overlay{
       position:fixed; inset:0;
       display:grid; place-items:center;
@@ -30,11 +36,65 @@
       font-size: clamp(80px, 18vw, 220px);
       font-weight: 800;
       color:#fff;
-      text-shadow: 0 10px 30px rgba(0,0,0,0.5);
       line-height:1;
+      text-shadow: 0 10px 30px rgba(0,0,0,0.5);
     }
+
+    /* YouTube (lo dejamos fuera de pantalla, pero no 1px para evitar comportamientos raros) */
+    #yt-player {
+      position:fixed;
+      left:-9999px;
+      top:-9999px;
+      width:300px;
+      height:300px;
+      opacity:0.0001;
+      pointer-events:none;
+      z-index:0;
+    }
+
+    /* Botón iniciar música */
+    .music-start{
+      position:fixed;
+      bottom:12px;
+      right:12px;
+      z-index:30;
+      display:flex;
+      gap:8px;
+      align-items:center;
+    }
+    .btn{
+      border:0;
+      background:rgba(0,0,0,.75);
+      color:#fff;
+      padding:10px 12px;
+      border-radius:12px;
+      cursor:pointer;
+      font-size:13px;
+    }
+    .btn:active{ transform: translateY(1px); }
+    .btn.secondary{
+      background:rgba(0,0,0,.45);
+    }
+    .music-start.hidden{ display:none; }
+
+    /* Debug visible */
+    .debug{
+      position:fixed;
+      top:12px;
+      left:12px;
+      background:rgba(0,0,0,.65);
+      color:#fff;
+      padding:10px 12px;
+      border-radius:12px;
+      font-size:12px;
+      z-index:40;
+      white-space:pre-wrap;
+      max-width:min(520px, calc(100vw - 24px));
+    }
+    .debug.hidden{ display:none; }
   </style>
 </head>
+
 <body>
   <div class="grid">
     <div class="cell" data-side="top-left"></div>
@@ -47,41 +107,49 @@
     <div class="countdown" id="countdown">3</div>
   </div>
 
+  <div id="yt-player"></div>
+
+  <div class="music-start" id="musicStart">
+    <button class="btn" id="startMusicBtn">🎵 Iniciar música</button>
+    <button class="btn secondary" id="toggleDebugBtn">Debug</button>
+  </div>
+
+  <div class="debug hidden" id="debug"></div>
+
   <script>
-    /* ===== CONFIG ===== */
-
-    // Intervalo normal (ms)
+    /* =======================
+       CONFIG
+    ======================= */
     const BASE_INTERVAL_MS = 3000;
+    const ALT_INTERVAL_MS  = 2000;
+    const ALT_DURATION_MS  = 15000;
 
-    // Intervalo alternativo (ms) (ej: más rápido = 700, más lento = 6000)
-    const ALT_INTERVAL_MS = 2000;
-
-    // Duración del modo alternativo (15s exactos)
-    const ALT_DURATION_MS = 15000;
-
-    // Cada cuánto puede dispararse el cambio (aleatorio entre min y max)
     const ALT_TRIGGER_MIN_MS = 8000;
     const ALT_TRIGGER_MAX_MS = 25000;
 
-    // 1 de cada 5 (≈ 20%) activa 2 cuadrados
     const DOUBLE_CHANCE = 1 / 5;
 
-    // Colores por lado (clase CSS)
     const COLORS = {
-      "top-left": "red",
+      "top-left": "yellow",
       "top-right": "blue",
       "bottom-left": "green",
-      "bottom-right": "yellow",
+      "bottom-right": "red",
     };
 
-    /* ================== */
+    // TU PLAYLIST:
+    const YT_PLAYLIST_ID = "PL4Z95YCEOjEfOMwEzJBWd969tpwo0O45T";
 
+    const YT_VOLUME = 100;
+    /* ======================= */
+
+    /* =======================
+       GRID LOGIC
+    ======================= */
     const cells = Array.from(document.querySelectorAll(".cell"));
     const overlay = document.getElementById("overlay");
     const countdownEl = document.getElementById("countdown");
     const colorClasses = Array.from(new Set(Object.values(COLORS)));
 
-    // Último combo para no repetir exactamente el mismo set
     let lastSidesKey = null;
 
     function clearColors() {
@@ -95,7 +163,6 @@
     }
 
     function randomBetween(min, max) {
-      // min y max en ms
       return min + Math.random() * (max - min);
     }
 
@@ -141,8 +208,7 @@
         function frame(now) {
           const elapsed = now - start;
           const remaining = Math.max(0, total - elapsed);
-          const n = Math.max(1, Math.ceil(remaining / 1000)); // 3..2..1
-          countdownEl.textContent = String(n);
+          countdownEl.textContent = String(Math.max(1, Math.ceil(remaining / 1000)));
 
           if (elapsed >= total) {
             overlay.classList.add("hidden");
@@ -157,57 +223,38 @@
       });
     }
 
-    // Scheduler por reloj: ticks exactos + cambios aleatorios de intervalo
     function startExactScheduler() {
       let currentInterval = BASE_INTERVAL_MS;
 
-      let nextTickAt = performance.now(); // para primer tick inmediato
+      let nextTickAt = performance.now();
       let inAltMode = false;
       let altEndsAt = 0;
 
-      // Cuándo disparar el siguiente cambio a ALT
       let nextAltTriggerAt = performance.now() + randomBetween(ALT_TRIGGER_MIN_MS, ALT_TRIGGER_MAX_MS);
+
+      activate();
+      nextTickAt += currentInterval;
 
       function enterAlt(now) {
         inAltMode = true;
         currentInterval = ALT_INTERVAL_MS;
         altEndsAt = now + ALT_DURATION_MS;
-
-        // Re-sincroniza el próximo tick desde "ahora" con el nuevo intervalo
         nextTickAt = now + currentInterval;
       }
 
       function exitAlt(now) {
         inAltMode = false;
         currentInterval = BASE_INTERVAL_MS;
-
-        // Programa el próximo trigger aleatorio a partir de ahora
         nextAltTriggerAt = now + randomBetween(ALT_TRIGGER_MIN_MS, ALT_TRIGGER_MAX_MS);
-
-        // Re-sincroniza el próximo tick desde "ahora" con el intervalo base
         nextTickAt = now + currentInterval;
       }
 
-      // primer encendido inmediato
-      activate();
-      nextTickAt = performance.now() + currentInterval;
-
       function frame(now) {
-        // ¿Toca entrar en ALT?
-        if (!inAltMode && now >= nextAltTriggerAt) {
-          enterAlt(now);
-        }
+        if (!inAltMode && now >= nextAltTriggerAt) enterAlt(now);
+        if (inAltMode && now >= altEndsAt) exitAlt(now);
 
-        // ¿Toca salir de ALT?
-        if (inAltMode && now >= altEndsAt) {
-          exitAlt(now);
-        }
-
-        // Ejecuta ticks si se han acumulado (sin “correr” 20 veces: hace 1 y resincroniza)
         if (now >= nextTickAt) {
           activate();
-
-          // Avanza el calendario sin deriva (si hubo lag, saltamos al siguiente slot válido)
           do { nextTickAt += currentInterval; } while (nextTickAt <= now);
         }
 
@@ -217,6 +264,114 @@
       requestAnimationFrame(frame);
     }
 
+    /* =======================
+       YOUTUBE (START ON CLICK)
+    ======================= */
+    const debugEl = document.getElementById("debug");
+    const toggleDebugBtn = document.getElementById("toggleDebugBtn");
+    const startMusicBtn = document.getElementById("startMusicBtn");
+    const musicStart = document.getElementById("musicStart");
+
+    function debug(msg) {
+      debugEl.textContent = msg;
+    }
+
+    toggleDebugBtn.addEventListener("click", () => {
+      debugEl.classList.toggle("hidden");
+      if (!debugEl.classList.contains("hidden") && !debugEl.textContent) {
+        debug("Debug activado.\nPulsa 'Iniciar música' y mira aquí si YouTube da error (101/150 = no embebible).");
+      }
+    });
+
+    function loadYouTubeAPI() {
+      return new Promise((resolve, reject) => {
+        if (window.YT && window.YT.Player) return resolve();
+        const s = document.createElement("script");
+        s.src = "https://www.youtube.com/iframe_api";
+        s.async = true;
+        s.onload = () => resolve();
+        s.onerror = () => reject(new Error("No se pudo cargar iframe_api"));
+        document.head.appendChild(s);
+      });
+    }
+
+    let ytPlayer = null;
+
+    // YouTube llama a esta función cuando la API está lista
+    window.onYouTubeIframeAPIReady = function () {
+      // Si llegamos aquí, ya podemos crear el player
+    };
+
+    async function startMusic() {
+      try {
+        startMusicBtn.disabled = true;
+        startMusicBtn.textContent = "Cargando…";
+
+        await loadYouTubeAPI();
+
+        // Espera activa breve a YT.Player
+        const t0 = performance.now();
+        while (!(window.YT && window.YT.Player)) {
+          if (performance.now() - t0 > 5000) throw new Error("YT.Player no disponible");
+          await new Promise(r => setTimeout(r, 50));
+        }
+
+        ytPlayer = new YT.Player("yt-player", {
+          height: "300",
+          width: "300",
+          playerVars: {
+            autoplay: 1,
+            // IMPORTANTE: como esto sucede tras click, podemos arrancar ya con sonido
+            mute: 0,
+            loop: 1,
+            listType: "playlist",
+            list: YT_PLAYLIST_ID,
+            playsinline: 1,
+            controls: 0,
+            rel: 0,
+            modestbranding: 1
+          },
+          events: {
+            onReady: (e) => {
+              try {
+                e.target.setVolume(YT_VOLUME);
+                e.target.playVideo();   // play desde gesto de usuario
+                e.target.unMute();
+                startMusicBtn.textContent = "🎵 Sonando";
+                musicStart.classList.add("hidden");
+                debug(`YouTube OK.\nPlaylist: ${YT_PLAYLIST_ID}\nVolumen: ${YT_VOLUME}`);
+              } catch (err) {
+                debug("Error onReady al reproducir/unmute: " + err);
+              }
+            },
+            onError: (ev) => {
+              // 101/150 suele ser restricción de embed (muy común con música)
+              debug(
+                `YouTube ERROR: ${ev.data}\n` +
+                `Si es 101/150: la playlist o algún vídeo NO permite embebido.\n` +
+                `Prueba con otra playlist o vídeos sin restricción.\n` +
+                `Playlist: ${YT_PLAYLIST_ID}`
+              );
+              startMusicBtn.disabled = false;
+              startMusicBtn.textContent = "🎵 Reintentar";
+              debugEl.classList.remove("hidden");
+            }
+          }
+        });
+
+      } catch (e) {
+        debug("Fallo iniciando música: " + (e?.message || e));
+        startMusicBtn.disabled = false;
+        startMusicBtn.textContent = "🎵 Reintentar";
+        debugEl.classList.remove("hidden");
+      }
+    }
+
+    startMusicBtn.addEventListener("click", startMusic);
+
+    /* =======================
+       INIT
+    ======================= */
     (async function init() {
       await runCountdownExact(3);
       startExactScheduler();
