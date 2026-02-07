@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <title>Grid 2x2 Exacto (intervalo variable)</title>
+  <style>
+    html, body { margin:0; height:100%; }
+    .grid{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      grid-template-rows:1fr 1fr;
+      height:100vh; width:100vw;
+    }
+    .cell{ background:#111; transition: background-color 0.12s linear; }
+
+    .red{background:#e53935;}
+    .blue{background:#1e88e5;}
+    .green{background:#43a047;}
+    .yellow{background:#fdd835;}
+
+    .overlay{
+      position:fixed; inset:0;
+      display:grid; place-items:center;
+      background:rgba(0,0,0,.35);
+      backdrop-filter: blur(2px);
+      z-index:10;
+    }
+    .overlay.hidden{display:none;}
+    .countdown{
+      font-size: clamp(80px, 18vw, 220px);
+      font-weight: 800;
+      color:#fff;
+      text-shadow: 0 10px 30px rgba(0,0,0,0.5);
+      line-height:1;
+    }
+  </style>
+</head>
+<body>
+  <div class="grid">
+    <div class="cell" data-side="top-left"></div>
+    <div class="cell" data-side="top-right"></div>
+    <div class="cell" data-side="bottom-left"></div>
+    <div class="cell" data-side="bottom-right"></div>
+  </div>
+
+  <div class="overlay" id="overlay">
+    <div class="countdown" id="countdown">3</div>
+  </div>
+
+  <script>
+    /* ===== CONFIG ===== */
+
+    // Intervalo normal (ms)
+    const BASE_INTERVAL_MS = 3000;
+
+    // Intervalo alternativo (ms) (ej: más rápido = 700, más lento = 6000)
+    const ALT_INTERVAL_MS = 2000;
+
+    // Duración del modo alternativo (15s exactos)
+    const ALT_DURATION_MS = 15000;
+
+    // Cada cuánto puede dispararse el cambio (aleatorio entre min y max)
+    const ALT_TRIGGER_MIN_MS = 8000;
+    const ALT_TRIGGER_MAX_MS = 25000;
+
+    // 1 de cada 5 (≈ 20%) activa 2 cuadrados
+    const DOUBLE_CHANCE = 1 / 5;
+
+    // Colores por lado (clase CSS)
+    const COLORS = {
+      "top-left": "red",
+      "top-right": "blue",
+      "bottom-left": "green",
+      "bottom-right": "yellow",
+    };
+
+    /* ================== */
+
+    const cells = Array.from(document.querySelectorAll(".cell"));
+    const overlay = document.getElementById("overlay");
+    const countdownEl = document.getElementById("countdown");
+    const colorClasses = Array.from(new Set(Object.values(COLORS)));
+
+    // Último combo para no repetir exactamente el mismo set
+    let lastSidesKey = null;
+
+    function clearColors() {
+      for (const cell of cells) {
+        for (const c of colorClasses) cell.classList.remove(c);
+      }
+    }
+
+    function sidesKey(sides) {
+      return sides.slice().sort().join("|");
+    }
+
+    function randomBetween(min, max) {
+      // min y max en ms
+      return min + Math.random() * (max - min);
+    }
+
+    function pickSidesNoRepeat(wantDouble) {
+      const sides = cells.map(c => c.dataset.side);
+      const candidates = [];
+
+      if (wantDouble) {
+        for (let i = 0; i < sides.length; i++) {
+          for (let j = i + 1; j < sides.length; j++) {
+            candidates.push([sides[i], sides[j]]);
+          }
+        }
+      } else {
+        for (const s of sides) candidates.push([s]);
+      }
+
+      const filtered = candidates.filter(c => sidesKey(c) !== lastSidesKey);
+      const pool = filtered.length ? filtered : candidates;
+
+      return pool[Math.floor(Math.random() * pool.length)];
+    }
+
+    function activate() {
+      const wantDouble = Math.random() < DOUBLE_CHANCE;
+      const chosenSides = pickSidesNoRepeat(wantDouble);
+
+      clearColors();
+      for (const side of chosenSides) {
+        const cell = cells.find(c => c.dataset.side === side);
+        const color = COLORS[side];
+        if (cell && color) cell.classList.add(color);
+      }
+
+      lastSidesKey = sidesKey(chosenSides);
+    }
+
+    function runCountdownExact(seconds = 3) {
+      return new Promise(resolve => {
+        const start = performance.now();
+        const total = seconds * 1000;
+
+        function frame(now) {
+          const elapsed = now - start;
+          const remaining = Math.max(0, total - elapsed);
+          const n = Math.max(1, Math.ceil(remaining / 1000)); // 3..2..1
+          countdownEl.textContent = String(n);
+
+          if (elapsed >= total) {
+            overlay.classList.add("hidden");
+            resolve();
+            return;
+          }
+          requestAnimationFrame(frame);
+        }
+
+        overlay.classList.remove("hidden");
+        requestAnimationFrame(frame);
+      });
+    }
+
+    // Scheduler por reloj: ticks exactos + cambios aleatorios de intervalo
+    function startExactScheduler() {
+      let currentInterval = BASE_INTERVAL_MS;
+
+      let nextTickAt = performance.now(); // para primer tick inmediato
+      let inAltMode = false;
+      let altEndsAt = 0;
+
+      // Cuándo disparar el siguiente cambio a ALT
+      let nextAltTriggerAt = performance.now() + randomBetween(ALT_TRIGGER_MIN_MS, ALT_TRIGGER_MAX_MS);
+
+      function enterAlt(now) {
+        inAltMode = true;
+        currentInterval = ALT_INTERVAL_MS;
+        altEndsAt = now + ALT_DURATION_MS;
+
+        // Re-sincroniza el próximo tick desde "ahora" con el nuevo intervalo
+        nextTickAt = now + currentInterval;
+      }
+
+      function exitAlt(now) {
+        inAltMode = false;
+        currentInterval = BASE_INTERVAL_MS;
+
+        // Programa el próximo trigger aleatorio a partir de ahora
+        nextAltTriggerAt = now + randomBetween(ALT_TRIGGER_MIN_MS, ALT_TRIGGER_MAX_MS);
+
+        // Re-sincroniza el próximo tick desde "ahora" con el intervalo base
+        nextTickAt = now + currentInterval;
+      }
+
+      // primer encendido inmediato
+      activate();
+      nextTickAt = performance.now() + currentInterval;
+
+      function frame(now) {
+        // ¿Toca entrar en ALT?
+        if (!inAltMode && now >= nextAltTriggerAt) {
+          enterAlt(now);
+        }
+
+        // ¿Toca salir de ALT?
+        if (inAltMode && now >= altEndsAt) {
+          exitAlt(now);
+        }
+
+        // Ejecuta ticks si se han acumulado (sin “correr” 20 veces: hace 1 y resincroniza)
+        if (now >= nextTickAt) {
+          activate();
+
+          // Avanza el calendario sin deriva (si hubo lag, saltamos al siguiente slot válido)
+          do { nextTickAt += currentInterval; } while (nextTickAt <= now);
+        }
+
+        requestAnimationFrame(frame);
+      }
+
+      requestAnimationFrame(frame);
+    }
+
+    (async function init() {
+      await runCountdownExact(3);
+      startExactScheduler();
+    })();
+  </script>
+</body>
+</html>
